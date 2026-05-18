@@ -16,11 +16,13 @@ DEFAULT_OUTPUT = REPO_ROOT / "outputs" / "fitted_parameters" / "iv_metadata_qc_c
 G_REF = 1000.0          # W/m^2
 T_REF = 25.0            # deg C
 
-# Approximate CdTe starting values.
-# You should replace these later with module datasheet values if available.
-ALPHA_ISC_REL_PER_C = 0.0004     # relative Isc temp coefficient, 1/deg C
-BETA_VOC_V_PER_C = -0.60         # module-level Voc temp coefficient, V/deg C
-G_MIN_VALID = 700.0              # minimum irradiance threshold for good outdoor IV trace
+# First Solar Series 7 TR1 datasheet-style relative temperature coefficients.
+# These are relative coefficients in units of 1/deg C.
+ALPHA_ISC_REL_PER_C = 0.0004      # +0.04 %/deg C
+BETA_VOC_REL_PER_C = -0.0028      # -0.28 %/deg C
+GAMMA_PMAX_REL_PER_C = -0.0032    # -0.32 %/deg C
+
+G_MIN_VALID = 700.0               # minimum irradiance threshold for good outdoor IV trace
 
 
 def safe_divide(a, b):
@@ -114,40 +116,54 @@ def add_qc_flags(df):
 
 def add_simple_cdte_corrections(df):
     """
-    Add simple first-pass CdTe correction/normalization columns.
+    Add first-pass CdTe correction/normalization columns using measured
+    thermocouple temperature and datasheet-style relative coefficients.
 
-    These are not meant to replace IEC 60891-style translation or full diode modeling.
-    They are a practical first-pass correction for trend visualization.
+    These corrections are not intended to replace IEC 60891-style translation
+    or full diode-model fitting. They are intended to provide corrected
+    comparison metrics that can later be used alongside diode-model results.
     """
 
     G = df["irradiance_w_m2"]
     T = df["temperature_c"]
 
-    # Irradiance-normalized Isc with optional temperature adjustment.
+    # Irradiance-normalized Isc using measured thermocouple temperature.
     # Isc_ref = Isc_meas * (G_ref/G) / (1 + alpha*(T - T_ref))
-    df["isc_norm_a"] = (
+    df["isc_datasheet_corr_a"] = (
         df["measured_isc"]
         * safe_divide(G_REF, G)
         / (1.0 + ALPHA_ISC_REL_PER_C * (T - T_REF))
     )
 
-    # Temperature-corrected Voc.
-    # If beta is dVoc/dT, then:
-    # Voc_ref = Voc_meas + beta * (T_ref - T_meas)
-    df["voc_temp_corr_v"] = (
-    df["measured_voc"]
-    + BETA_VOC_V_PER_C * (T - T_REF)
-)
+    # Temperature-corrected Voc using relative datasheet coefficient.
+    # Voc_ref = Voc_meas / (1 + beta*(T - T_ref))
+    df["voc_datasheet_corr_v"] = (
+        df["measured_voc"]
+        / (1.0 + BETA_VOC_REL_PER_C * (T - T_REF))
+    )
 
-    # Simple irradiance-normalized Pmax.
-    # This is intentionally simple and should be treated as a first-pass comparison.
+    # Datasheet-style Pmax correction using irradiance and Pmax temperature coefficient.
+    # Pmax_ref = Pmax_meas / [(G/G_ref) * (1 + gamma*(T - T_ref))]
+    df["pmax_datasheet_corr_w"] = (
+        df["measured_pmax"]
+        / (
+            safe_divide(G, G_REF)
+            * (1.0 + GAMMA_PMAX_REL_PER_C * (T - T_REF))
+        )
+    )
+
+    # Backward-compatible names used by earlier plotting scripts.
+    # These names allow old plotting scripts to keep working.
+    df["isc_norm_a"] = df["isc_datasheet_corr_a"]
+    df["voc_temp_corr_v"] = df["voc_datasheet_corr_v"]
     df["pmax_irradiance_norm_w"] = df["measured_pmax"] * safe_divide(G_REF, G)
 
-    # Optional combined rough correction using normalized current and corrected voltage scaling.
+    # Older simple correction kept for comparison only.
+    # Prefer pmax_datasheet_corr_w for future analysis.
     df["pmax_simple_corr_w"] = (
         df["measured_pmax"]
         * safe_divide(G_REF, G)
-        * safe_divide(df["voc_temp_corr_v"], df["measured_voc"])
+        * safe_divide(df["voc_datasheet_corr_v"], df["measured_voc"])
     )
 
     return df
@@ -176,6 +192,9 @@ def print_summary(df):
         "measured_isc",
         "irradiance_w_m2",
         "temperature_c",
+        "isc_datasheet_corr_a",
+        "voc_datasheet_corr_v",
+        "pmax_datasheet_corr_w",
         "pmax_simple_corr_w",
     ]:
         if col in df.columns:
@@ -189,7 +208,7 @@ def print_summary(df):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Add QC flags and simple CdTe correction columns to parsed IV metadata."
+        description="Add QC flags and CdTe correction columns to parsed IV metadata."
     )
 
     parser.add_argument("--input", default=str(DEFAULT_INPUT))
@@ -211,7 +230,7 @@ def main():
 
     print_summary(df)
     print()
-    print(f"Saved corrected metadata to:")
+    print("Saved corrected metadata to:")
     print(output_path)
 
 
