@@ -1,3 +1,3 @@
 data/raw_iv_traces/
 data/processed_iv_traces/
-outputs/
+outputs/__pycache__/ 
